@@ -12,7 +12,7 @@ OrdinalSurv = function(id, time, ord, lower = NULL, upper = NULL) {
 doPanelFit.ML = function(DF, Method, StdErr) {
   if (!is.null(DF$lower) & !is.null(DF$upper)) {
     X = as.matrix(DF[, -c(1:5)])
-  }else {X = as.matrix(DF[, -c(1:3)])}
+  }else {stop("ML method needs completely obseverd data!")}
   max_time = max(DF$time)
   # 设置样条函数
   all_knots = seq(0, max_time, length.out = 5)
@@ -39,6 +39,7 @@ doPanelFit.ML = function(DF, Method, StdErr) {
   lower = rep(0, ncol(isMat))
   beta = rep(0, ncol(X))
   for (i in 1:Method@max_iter) {
+    # browser()
     beta = optim(beta, function(x) true_lik(alpha, x), NULL, method = "L-BFGS-B",hessian = FALSE)$par
     alpha = optim(alpha, function(x) true_lik(x, beta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
   }
@@ -54,6 +55,53 @@ doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
   betaVar[betaVar<=0] = 0
   betaSE = sqrt(diag(betaVar))
   list(alpha = res$alpha, beta = res$beta, baseline = res$baseline, betaVar = betaVar, betaSE = betaSE)
+}
+
+doPanelFit.EM = function(DF, Method, StdErr) {
+  X = as.matrix(DF[, -c(1:3)])  # 协变量
+  DF = cbind(DF[, c(1:3)], lower = 0, upper = Inf, DF[, -c(1:3)])
+  max_time = max(DF$time)  # 最大观察时间
+  ranks = dplyr::dense_rank(DF$ord)
+  n_levels = length(unique(DF$ord))  # 有多少个等级
+  # 设置样条函数
+  all_knots = seq(0, max_time, length.out = 5)
+  # 目前先固定3个内部节点(K^1/3+1?)
+  internal_knots = all_knots[c(2, 3, 4)]
+  isMat = splines2::iSpline(DF$time, knots = internal_knots, degree = 2, Boundary.knots = c(0.0, max_time), intercept = TRUE)
+  # 参数初始化
+  # alpha = rep(1, ncol(isMat))
+  alpha = runif(ncol(isMat))
+  # browser()
+  beta = spef::panelReg(spef::PanelSurv(id, time, ord) ~ X, data = DF,method = "MPL", se = "NULL")$beta
+  met = new("ML", max_iter = Method@max_iter)
+  ids = which(!duplicated(DF$id))
+  for (i in 1:Method@em_iter) {
+    # debug
+    print(alpha)
+    print(beta)
+    # E step
+    XB = c(X %*% beta)
+    m0 = c(isMat %*% alpha)
+    dm0 = c(0.0, diff(m0))
+    dm0[ids] = m0[ids]
+    lam = dm0*exp(XB)
+    qq = quantile(lam, probs = seq(0, 1, 1/n_levels))
+    qq = as.integer(qq)
+    # print(qq)
+    qq[1] = 0
+    qq[length(qq)] = Inf
+    DF$lower = sapply(ranks, function(x) qq[x])
+    DF$upper = sapply(ranks, function(x) qq[x+1])
+    # browser()
+    # M step
+    res = doPanelFit(DF, Method = met, NULL)
+    # 更新参数
+    alpha = res$alpha + rnorm(length(alpha))/i
+    beta = res$beta + rnorm(length(beta))/i
+  }
+  ts = seq(0, max_time, 0.1)
+  isMat = splines2::iSpline(ts, knots = internal_knots, degree = 2, intercept = TRUE)
+  list(alpha = alpha, beta = beta, baseline = list(t = ts, Lambda = (isMat %*% alpha)[, 1]), hess = res$hess)
 }
 
 # 所有算法的Bootstrap方差计算都会被派发到这个函数
@@ -85,6 +133,9 @@ setClass("Method",
          prototype(max_iter=20),
          contains="VIRTUAL")
 setClass("ML", contains="Method")
+setClass("EM",
+         representation(em_iter = "numeric", max_iter="numeric"),
+         prototype(em_iter=50, max_iter=20), contains="Method")
 
 setClass("MPL",contains="Method")
 
@@ -113,9 +164,13 @@ setMethod("doPanelFit",
           signature(Method = "Method", StdErr = "Bootstrap"),
           doPanelFit.Method.Bootstrap)
 
+setMethod("doPanelFit",
+          signature(Method = "EM", StdErr = "NULL"),
+          doPanelFit.EM)
+
 
 ordinalReg = function(formula, data,
-                      method = c("ML", "MPL"),
+                      method = c("ML", "MPL", "EM"),
                       se = c("NULL", "Bootstrap", "Fisher"),
                       control = list()) {
   # check function arguments
