@@ -10,9 +10,63 @@ OrdinalSurv = function(id, time, ord, lower = NULL, upper = NULL) {
 
 # 这里最好还是用大写的变量名,不然可能会和命名空间stats里的变量发生冲突(比如df)
 doPanelFit.ML = function(DF, Method, StdErr) {
+  mean_cpois = Vectorize(function(lam) {
+    integrate(function(x, lam){pgamma(lam, x+1, lower = TRUE)}, 0, Inf, lam = lam)$value
+  })
+
   if (!is.null(DF$lower) & !is.null(DF$upper)) {
     X = as.matrix(DF[, -c(1:5)])
-  }else {stop("ML method needs completely obseverd data!")}
+    Y = DF$ord
+    # n_levels = length(unique(Y))
+    # theta = rep(1, n_levels - 1)
+    # lower_the = rep(0, n_levels - 1)
+    theta = NULL
+    true_lik = function(alpha, beta, theta) {
+      XB = c(X %*% beta)
+      m0 = c(isMat %*% alpha)
+      dm0 = c(0.0, diff(m0))
+      dm0[ids] = m0[ids]
+      lam = dm0*exp(XB)
+      rawP = ppois(DF$upper, lam) - ppois(DF$lower, lam)
+      rawP = ifelse(rawP <= 0, 1e-16, rawP)
+      # corner case
+      eqs = which(DF$upper == DF$lower)
+      rawP[eqs] = dpois(DF$upper, lam)[eqs] + 1e-16
+      -sum(log(rawP))
+    }
+  }else {
+    X = as.matrix(DF[, -c(1:3)])
+    Y = DF$ord
+    n_levels = length(unique(Y))
+    theta = rep(1, n_levels - 1)
+    lower_the = rep(0, n_levels - 1)
+
+    true_lik = function(alpha, beta, theta) {
+      theta = c(0, cumsum(theta), 1e2)
+      the = round(theta) #取整数
+      XB = c(X %*% beta)
+      m0 = c(isMat %*% alpha)
+      dm0 = c(0.0, diff(m0))
+      dm0[ids] = m0[ids]
+      lam = dm0*exp(XB)
+      # 插值
+      # p1 = ppois(the[Y+1], lam)
+      # p2 = ppois(the[Y+1]+1, lam)
+      # up = p1 + (p2 - p1)*(theta[Y+1] - the[Y+1])
+      #
+      # p1 = ppois(the[Y], lam)
+      # p2 = ppois(the[Y]+1, lam)
+      # lo = p1 + (p2 - p1)*(theta[Y] - the[Y])
+      # rawP = up - lo
+      # gamma1
+      # rawP = pgamma(lam, shape = theta[Y] + 0.5) - pgamma(lam, shape = theta[Y + 1] + 0.5)
+      # gamma2
+      rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
+      rawP = ifelse(rawP <= 0, 1e-10, rawP)
+      -sum(log(rawP))
+    }
+    # stop("ML method needs completely obseverd data!")
+  }
   max_time = max(DF$time)
   # 设置样条函数
   all_knots = seq(0, max_time, length.out = 5)
@@ -20,41 +74,109 @@ doPanelFit.ML = function(DF, Method, StdErr) {
   internal_knots = all_knots[c(2, 3, 4)]
   isMat = splines2::iSpline(DF$time, knots = internal_knots, degree = 2, Boundary.knots = c(0.0, max_time), intercept = TRUE)
   ids = which(!duplicated(DF$id))
-  true_lik = function(alpha, beta) {
+  # 交替优化alpha和beta
+  # 参数初始化
+  alpha = rep(1, ncol(isMat))
+  lower = rep(0, ncol(isMat))
+  x = cbind(Intercept = 1, X)
+  fit = glm.fit(x, Y, family = poisson())
+  beta = fit$coefficients[-1]
+  # beta = rep(0, ncol(X))
+  for (i in 1:Method@max_iter) {
+    # browser()
+    if (is.null(DF$lower) | is.null(DF$upper)) {
+      theta = optim(theta, function(x) true_lik(alpha, beta, x), NULL, method = "L-BFGS-B", lower = lower_the, hessian = FALSE)$par
+    }
+    beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE)$par
+    alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
+  }
+  if (is.null(DF$lower) | is.null(DF$upper)) {
+    theta = round(theta)
+    beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE)$par
+    alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
+  }
+  hess = numDeriv::hessian(function(x) true_lik(x[1:length(alpha)],
+                                                x[(length(alpha)+1):(length(alpha) + length(beta))],
+                                                theta), x = c(alpha, beta))
+  ts = seq(0, max_time, 0.1)
+  isMat = splines2::iSpline(ts, knots = internal_knots, degree = 2, intercept = TRUE)
+  list(alpha = alpha, beta = beta, theta = theta, baseline = list(t = ts, Lambda = (isMat %*% alpha)[, 1]), hess = hess)
+}
+
+doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
+  res = doPanelFit(DF, Method, NULL)
+  # browser()
+  betaVar = solve(res$hess)[(length(res$alpha)+1):ncol(res$hess), (length(res$alpha)+1):ncol(res$hess)]
+  betaVar[betaVar<=0] = 0
+  betaSE = sqrt(diag(betaVar))
+  list(alpha = res$alpha, beta = res$beta, theta = c(0, cumsum(res$theta), Inf),baseline = res$baseline, betaVar = betaVar, betaSE = betaSE)
+}
+
+doPanelFit.Random.Fisher = function(DF, Method, StdErr) {
+  X = as.matrix(DF[, -c(1:3)])
+  Y = DF$ord
+  n_levels = length(unique(Y))
+  max_time = max(DF$time)
+  # 设置样条函数
+  all_knots = seq(0, max_time, length.out = 5)
+  # 目前先固定3个内部节点(K^1/3+1?)
+  internal_knots = all_knots[c(2, 3, 4)]
+  isMat = iSpline(DF$time, knots = internal_knots, degree = 2, Boundary.knots = c(0.0, max_time), intercept = TRUE)
+  ids = which(!duplicated(DF$id))
+  true_lik = function(alpha, beta, theta) {
+    # browser()
     XB = c(X %*% beta)
     m0 = c(isMat %*% alpha)
     dm0 = c(0.0, diff(m0))
     dm0[ids] = m0[ids]
     lam = dm0*exp(XB)
-    rawP = ppois(DF$upper, lam) - ppois(DF$lower, lam)
-    rawP = ifelse(rawP <= 0, 1e-16, rawP)
-    # corner case
-    eqs = which(DF$upper == DF$lower)
-    rawP[eqs] = dpois(DF$upper, lam)[eqs] + 1e-16
+
+    theta = c(0, cumsum(theta), Inf)
+
+    up = ppois(theta[Y + 1], lam)
+    lo = ppois(theta[Y], lam)
+    rawP = up - lo
+    eqs = which(theta[Y + 1]==theta[Y])
+    rawP[eqs] = dpois(theta[Y], lam)[eqs]
+    # if(any(rawP < 0)) stop("up < lo, fatal error")
+    rawP = ifelse(rawP <= 0, 1e-6, rawP)
     -sum(log(rawP))
   }
-  # 交替优化alpha和beta
   # 参数初始化
   alpha = rep(1, ncol(isMat))
+  xx = cbind(Intercept = 1, X)
+  fit = glm.fit(xx, Y, family = poisson())
+  # alpha = sample(1:10, n_levels - 1, replace = TRUE)
+  beta = fit$coefficients[-1]
+  # lower = c(rep(0, ncol(isMat)), rep(-Inf, ncol(X)))
   lower = rep(0, ncol(isMat))
-  beta = rep(0, ncol(X))
+  # random search
+  opt_sol = list(value = Inf)
   for (i in 1:Method@max_iter) {
+    theta = sample(1:10, n_levels - 1, replace = TRUE)
     # browser()
-    beta = optim(beta, function(x) true_lik(alpha, x), NULL, method = "L-BFGS-B",hessian = FALSE)$par
-    alpha = optim(alpha, function(x) true_lik(x, beta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
+    for (i in 1:10) {
+      # browser()
+      beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE, control = list(maxit=20))$par
+      alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE, control = list(maxit=20))$par
+    }
+    res = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE)
+    # res = optim(c(alpha, beta), function(x) true_lik(x[1:length(alpha)], x[(length(alpha)+1):(length(alpha)+length(beta))], theta), NULL, method = "L-BFGS-B",hessian = FALSE)
+    if(res$value < opt_sol$value) {
+      opt_sol$value = res$value
+      opt_sol$theta = theta
+      opt_sol$par = c(alpha, beta)
+    }
   }
-  hess = numDeriv::hessian(function(x) true_lik(x[1:length(alpha)], x[(length(alpha)+1):length(x)]), x = c(alpha, beta))
-  ts = seq(0, max_time, 0.1)
-  isMat = splines2::iSpline(ts, knots = internal_knots, degree = 2, intercept = TRUE)
-  list(alpha = alpha, beta = beta, baseline = list(t = ts, Lambda = (isMat %*% alpha)[, 1]), hess = hess)
-}
-
-doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
-  res = doPanelFit(DF, Method, NULL)
-  betaVar = solve(res$hess)[(length(res$alpha)+1):ncol(res$hess), (length(res$alpha)+1):ncol(res$hess)]
+  alpha = opt_sol$par[1:length(alpha)]
+  beta = opt_sol$par[(length(alpha)+1):(length(alpha)+length(beta))]
+  theta = opt_sol$theta
+  # browser()
+  hess = numDeriv::hessian(function(x) true_lik(alpha, x, theta), x = beta)
+  betaVar = solve(hess)
   betaVar[betaVar<=0] = 0
   betaSE = sqrt(diag(betaVar))
-  list(alpha = res$alpha, beta = res$beta, baseline = res$baseline, betaVar = betaVar, betaSE = betaSE)
+  list(alpha = alpha, beta = beta, theta = theta, betaVar = betaVar, betaSE = betaSE)
 }
 
 doPanelFit.EM = function(DF, Method, StdErr) {
@@ -133,11 +255,12 @@ setClass("Method",
          prototype(max_iter=20),
          contains="VIRTUAL")
 setClass("ML", contains="Method")
+setClass("Random",contains="Method")
 setClass("EM",
          representation(em_iter = "numeric", max_iter="numeric"),
          prototype(em_iter=50, max_iter=20), contains="Method")
 
-setClass("MPL",contains="Method")
+setClass("EM",contains="Method")
 
 setClass("StdErr")
 setClass("Bootstrap",
@@ -161,6 +284,10 @@ setMethod("doPanelFit",
           doPanelFit.ML.Fisher)
 
 setMethod("doPanelFit",
+          signature(Method = "Random", StdErr = "Fisher"),
+          doPanelFit.Random.Fisher)
+
+setMethod("doPanelFit",
           signature(Method = "Method", StdErr = "Bootstrap"),
           doPanelFit.Method.Bootstrap)
 
@@ -170,7 +297,7 @@ setMethod("doPanelFit",
 
 
 ordinalReg = function(formula, data,
-                      method = c("ML", "MPL", "EM"),
+                      method = c("ML", "Random", "EM"),
                       se = c("NULL", "Bootstrap", "Fisher"),
                       control = list()) {
   # check function arguments
@@ -217,6 +344,11 @@ print.ordinalReg = function(x, ...) {
     dimnames(tmp) <- list(names(coef), c("coef", "exp(coef)", "se(coef)", "z", "Pr(>|z|)"))
     printCoefmat(tmp, dig.tst=max(1, min(5, digits)))
   } else {cat("Null model")}
-  cat("\n")
+  if (!is.null(x$theta)) {
+    cat("\n")
+    cat("Cut points for ordinal outcome: \n")
+    cat(x$theta)
+    cat("\n")
+  }
   invisible()
 }
