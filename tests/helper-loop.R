@@ -1,3 +1,6 @@
+library(parallel)
+library(pbapply)
+
 sim_loop = function(data_generator, model_generator, nsim = 100, ncores = 10){
   cat(paste0("模拟进行中,当前使用CPU核心数:", ncores,"\t","模拟进度："))
   pboptions(char = "=", txt.width = 80)

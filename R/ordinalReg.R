@@ -1,96 +1,133 @@
-OrdinalSurv = function(id, time, ord, lower = NULL, upper = NULL) {
-  os = list(osDF = data.frame(id = id, time = time, ord = ord))
-  if (!is.null(lower) & !is.null(upper)) {
-    os$osDF$lower = lower
-    os$osDF$upper = upper
-  }
-  class(os) = "OrdinalSurv"
-  os
-}
 
 # 这里最好还是用大写的变量名,不然可能会和命名空间stats里的变量发生冲突(比如df)
+#' @importFrom numDeriv hessian
 doPanelFit.ML = function(DF, Method, StdErr) {
-  # 求出dt,齐次过程需要用
-  dt = DF %>% group_by(id) %>% mutate(dt = diff(c(0, time))) %>% pull(dt)
+  # 非齐次过程
+  timeGrid <- sort(unique(DF$time))
+  K <- length(timeGrid)
+  nKnots <- ceiling(K^{1/3}) + 1
+  tau <- max(timeGrid)
+  bspBasis <- list(df=nKnots+3, knots=seq(0, tau, length=nKnots+2)[2:(nKnots + 1)],
+                   intercept=TRUE, Boundary.knots=c(0, tau))
+  rawIspMat <- ispline(DF$time, bspBasis)
+  tempDF <- ddply(data.frame(id=DF$id, rawIspMat), "id",
+                  function(m) data.frame(diff(as.matrix(rbind(0, m[, -1])))))
+  # 计算dLam
+  dRawIspMat <- as.matrix(tempDF[, -1])
+
   # 判断是否提供了cut point信息
   if (!is.null(DF$lower) & !is.null(DF$upper)) {
     X = as.matrix(DF[, -c(1:5)])
     Y = DF$ord
     theta = NULL
-    true_lik = function(alpha, beta, theta) {
-      XB = c(X %*% beta)
-      lam = alpha*dt*exp(XB)
-      # 第一个cut point=-1之后不需要额外处理
-      up = ppois(DF$upper, lam)
-      lo = ppois(DF$lower, lam)
-      rawP = up - lo
-      rawP = ifelse(rawP <= 0, 1e-16, rawP)
-      # corner case
-      eqs = which(DF$upper == DF$lower)
-      rawP[eqs] = dpois(DF$upper, lam)[eqs] + 1e-16
-      -sum(log(rawP))
-    }
   }else {
     X = as.matrix(DF[, -c(1:3)])
     Y = DF$ord
     n_levels = length(unique(Y))
     theta = rep(1.5, n_levels - 1)
-    lower_the = rep(1, n_levels - 1)
-    true_lik = function(alpha, beta, theta) {
-      theta = c(-1, cumsum(theta), 1e4)
-      XB = c(X %*% beta)
-      lam = alpha*dt*exp(XB)
-      rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
-      rawP = ifelse(rawP <= 0, 1e-10, rawP)
-      -sum(log(rawP))
-    }
+    l_theta = rep(1, n_levels - 1)
+    n_theta = length(theta)
   }
+  # 这里参数theta只是为了统一求Hessian而已
+  true_lik = function(alpha, beta, theta = NULL) {
+    if (!is.null(theta)) {
+      theta = c(-1, cumsum(theta), 1e4)
+      DF$upper = as.integer(theta[Y+1])
+      DF$lower = as.integer(theta[Y])
+    }
+    dLam = c(dRawIspMat %*% alpha)
+    XB = c(X %*% beta)
+    lam = dLam*exp(XB)
+    # 第一个cut point=-1之后不需要额外处理
+    up = ppois(DF$upper, lam)
+    lo = ppois(DF$lower, lam)
+    rawP = up - lo
+    rawP = ifelse(rawP <= 0, 1e-16, rawP)
+    # corner case
+    eqs = which(DF$upper == DF$lower)
+    rawP[eqs] = dpois(DF$upper, lam)[eqs] + 1e-16
+    -sum(log(rawP))
+  }
+
+  pseudo_lik = function(alpha, beta, theta) {
+    theta = c(-1, cumsum(theta), 1e4)
+    dLam = c(dRawIspMat %*% alpha)
+    XB = c(X %*% beta)
+    lam = dLam*exp(XB)
+    rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
+    rawP = ifelse(rawP <= 0, 1e-10, rawP)
+    -sum(log(rawP))
+  }
+
   # 交替优化alpha和beta
   # 参数初始化
-  max_time = max(DF$time)
-  alpha = 1
-  lower = 0
+  alpha <- rep(1, bspBasis$df)
+  n_alpha = length(alpha)
+  l_alpha <- rep(0, bspBasis$df)
   # 调用Poisson回归进行参数初始化
   x = cbind(Intercept = 1, X)
   fit = glm.fit(x, Y, family = poisson())
   beta = fit$coefficients[-1]
+  n_beta = length(beta)
+  l_beta = rep(-10, n_beta)
 
   convergence = F
-  for (i in 1:Method@max_iter) {
-    # 更新cut point
-    if (is.null(DF$lower) | is.null(DF$upper)) {
-      theta = optim(theta, function(x) true_lik(alpha, beta, x), NULL,
-                    method = "L-BFGS-B", lower = lower_the, hessian = FALSE)$par
-    }
-    # 更新基线参数
-    alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL,
-                  method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
-    # 更新协变量系数
-    betaPre = beta
-    beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL,
-                 method = "L-BFGS-B",hessian = FALSE)$par
-    s = beta - betaPre
-    if (max(abs(s)) < Method@absTol | max(abs(s / betaPre)) < Method@relTol) {
-      convergence = T
-      break
-    }
-  }
-  hess = numDeriv::hessian(function(x) true_lik(x[1:length(alpha)],
-                                                x[(length(alpha)+1):(length(alpha) + length(beta))],
-                                                theta), x = c(alpha, beta))
+  if (is.null(DF$lower) | is.null(DF$upper)) {
+    # 没有提供cut point,需要优化伪似然函数
+    res = optim(c(alpha, beta, theta),
+                  function(x) {
+                    alpha <- x[1:n_alpha]
+                    beta <- x[(n_alpha + 1):(n_alpha + n_beta)]
+                    theta <- x[(n_alpha + n_beta + 1):(n_alpha + n_beta + n_theta)]
+                    pseudo_lik(alpha, beta, theta)
+                  }, NULL,
+                  method = "L-BFGS-B", lower = c(l_alpha, l_beta, l_theta),
+                hessian = FALSE, control = list(maxit = Method@max_iter,
+                                                factr = 1e9))
 
-  ts = seq(0, max_time, 0.1)
+    optimized_params <- res$par
+    alpha <- optimized_params[1:n_alpha]
+    beta <- optimized_params[(n_alpha + 1):(n_alpha + n_beta)]
+    theta <- optimized_params[(n_alpha + n_beta + 1):(n_alpha + n_beta + n_theta)]
+  } else {
+    # 提供了cut point,需要优化似然函数
+    res = optim(c(alpha, beta),
+                function(x) {
+                  alpha <- x[1:n_alpha]
+                  beta <- x[(n_alpha + 1):(n_alpha + n_beta)]
+                  true_lik(alpha, beta)
+                }, NULL,
+                method = "L-BFGS-B", lower = c(l_alpha, l_beta),
+                hessian = FALSE, control = list(maxit = Method@max_iter,
+                                                factr = 1e10))
+
+    optimized_params <- res$par
+    alpha <- optimized_params[1:n_alpha]
+    beta <- optimized_params[(n_alpha + 1):(n_alpha + n_beta)]
+  }
+
+  convergence = (res$convergence == 0)
+
+  # 计算hessian矩阵用的似然函数
+  hess = hessian(function(x) true_lik(x[1:n_alpha],
+                                      x[(n_alpha + 1):(n_alpha + n_beta)],
+                                      theta), x = c(alpha, beta))
+
   list(alpha = alpha, beta = beta, theta = theta, convergence = convergence,
-       baseline = list(t = ts, Lambda = ts*alpha), hess = hess)
+       baseline = isplineFun(coef = alpha, bspBasis), hess = hess)
 }
 
 doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
   res = doPanelFit(DF, Method, NULL)
-  # browser()
   betaVar = solve(res$hess)[(length(res$alpha)+1):ncol(res$hess), (length(res$alpha)+1):ncol(res$hess)]
-  betaVar[betaVar<=0] = 0
+  # betaVar[betaVar<=0] = 0
   betaSE = sqrt(diag(betaVar))
-  list(alpha = res$alpha, beta = res$beta, theta = c(0, cumsum(res$theta), Inf), convergence = res$convergence,
+  if (!is.null(DF$lower) & !is.null(DF$upper)) {
+    theta = NULL
+  } else {
+    theta = c(0, cumsum(res$theta), Inf)
+  }
+  list(alpha = res$alpha, beta = res$beta, theta = theta, convergence = res$convergence,
        baseline = res$baseline, betaVar = betaVar, betaSE = betaSE)
 }
 
@@ -277,7 +314,22 @@ setMethod("doPanelFit",
           signature(Method = "EM", StdErr = "NULL"),
           doPanelFit.EM)
 
-
+#' Fits Semiparametric Regression Models for Ordinal Panel Count Data
+#' @param formula A formula object, with the response on the left of a
+#'     "~" operator, and the terms on the right. The response must be a
+#'     ordinal survival object as returned by function \code{OrdinalSurv}.
+#' @param data A data.frame in which to interpret the variables named in
+#'     the \code{formula}. Three variables including subjects' id,
+#'     observation times, and ordinal observation of new events since last
+#'     observation time are required to feed into function
+#'     \code{OrdinalSurv} as response. At least one covariate variable is required.
+#' @param method Fitting method. See \sQuote{Details}.
+#' @param se Standard error estimation method. See \sQuote{Details}.
+#' @param control A list of control parameters. See \sQuote{Details}.
+#' @return An object of S3 class \code{"ordinalReg"} representing the fit results.
+#' @export
+#' @importFrom plyr ddply
+#' @importFrom splines bs
 ordinalReg = function(formula, data,
                       method = c("ML", "Random", "EM"),
                       se = c("NULL", "Bootstrap", "Fisher"),
@@ -308,29 +360,4 @@ ordinalReg = function(formula, data,
   fit$method = method
   class(fit) = "ordinalReg"
   fit
-}
-
-print.ordinalReg = function(x, ...) {
-  digits = 4
-  coef <- x$beta
-  se <- sqrt(diag(x$betaVar))
-  if(all(dim(se) == 0) & !is.null(dim(se))) se <- rep(NA, length(coef))
-  ## Print results
-  cat("\n")
-  cat("Call:\n")
-  dput(x$call)
-  cat("\n")
-  if (!is.null(x$beta)) {
-    tmp <- data.frame(coef, exp(coef), se,
-                      z = coef/se, p = signif(1 - pchisq((coef/ se)^2, 1), digits - 1))
-    dimnames(tmp) <- list(names(coef), c("coef", "exp(coef)", "se(coef)", "z", "Pr(>|z|)"))
-    printCoefmat(tmp, dig.tst=max(1, min(5, digits)))
-  } else {cat("Null model")}
-  if (!is.null(x$theta)) {
-    cat("\n")
-    cat("Cut points for ordinal outcome: \n")
-    cat(x$theta)
-    cat("\n")
-  }
-  invisible()
 }

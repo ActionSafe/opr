@@ -1,6 +1,7 @@
 library(dplyr)
 library(tidyr)
 
+
 orderize = function(data, levels = NULL, num_levels = 3, int = T) {
   if (is.null(levels)) {
     qq = quantile(Y, probs = seq(0, 1, 1/num_levels))
@@ -75,29 +76,29 @@ gen_panel = function(data, X, max_time, num_levels, levels) {
 }
 
 
-gen_hpp_ti = function(n_case, lam, beta, X, max_time, num_levels = NULL, levels = NULL) {
-  A = exp((X %*% beta)[, 1])
-  # 生成Poisson过程（齐次）
-  data = nhppp::vdraw_sc_step_regular(
-    lambda_matrix = matrix(rep(lam, n_case), ncol = 1, byrow = T)*A,
-    range_t = c(0, max_time),
-    atmost1 = FALSE
-  )
-  data = as.data.frame(cbind(data, X))
-  gen_panel(data, X, max_time, num_levels, levels)
-}
+# gen_hpp_ti = function(n_case, lam, beta, X, max_time, num_levels = NULL, levels = NULL) {
+#   A = exp((X %*% beta)[, 1])
+#   # 生成Poisson过程（齐次）
+#   data = nhppp::vdraw_sc_step_regular(
+#     lambda_matrix = matrix(rep(lam, n_case), ncol = 1, byrow = T)*A,
+#     range_t = c(0, max_time),
+#     atmost1 = FALSE
+#   )
+#   data = as.data.frame(cbind(data, X))
+#   gen_panel(data, X, max_time, num_levels, levels)
+# }
 
-gen_nhpp_ti = function(n_case, Lambda, beta, X, max_time, num_levels = NULL, levels = NULL) {
-  A = exp((X %*% beta)[, 1])
-  # 生成Poisson过程（齐次）
-  data = nhppp::vdraw_sc_step_regular(
-    Lambda_matrix = matrix(rep(Lambda, n_case), nrow = n_case, byrow = T)*A,
-    range_t = c(0, max_time),
-    atmost1 = FALSE
-  )
-  data = as.data.frame(cbind(data, X))
-  gen_panel(data, X, max_time, num_levels, levels)
-}
+# gen_nhpp_ti = function(n_case, Lambda, beta, X, max_time, num_levels = NULL, levels = NULL) {
+#   A = exp((X %*% beta)[, 1])
+#   # 生成Poisson过程（齐次）
+#   data = nhppp::vdraw_sc_step_regular(
+#     Lambda_matrix = matrix(rep(Lambda, n_case), nrow = n_case, byrow = T)*A,
+#     range_t = c(0, max_time),
+#     atmost1 = FALSE
+#   )
+#   data = as.data.frame(cbind(data, X))
+#   gen_panel(data, X, max_time, num_levels, levels)
+# }
 
 gen_hpp_ni = function(n_case, lam, beta, X, max_time, levels = NULL) {
   intensity = lam * exp((X %*% beta)[, 1])
@@ -125,6 +126,31 @@ gen_hpp_ni = function(n_case, lam, beta, X, max_time, levels = NULL) {
   df = cbind(df, X)
 }
 
+
+gen_nhpp_ni = function(n_case, Lam_func, beta, X, max_time, levels = NULL) {
+  intensity = exp((X %*% beta)[, 1])
+  # 生成Poisson过程（非齐次）
+  nObs = sample(1:9, n_case, replace=TRUE)
+  df <- NULL
+  for (i in 1:n_case) {
+    # sq <- cumsum(round(runif(nObs[i], 0.25, 2), 2))
+    sq <- unique(round(sort(runif(nObs[i], 0.25, max_time)), 2))
+    nObs[i] <- length(sq)
+    Lam = Lam_func(sq)
+    dLam = diff(c(0, Lam))
+    df <- rbind(df,
+                data.frame(id=i,
+                           time=sq,
+                           count=rpois(n=nObs[i], lambda=dLam * intensity[i])))
+  }
+  ord = orderize(df$count, levels = levels)
+  df$count_obs = ord$data
+  qq = ord$levels
+  df$lower = qq[df$count_obs]
+  df$upper = qq[df$count_obs + 1]
+  X = X[rep(1:n_case, nObs), ]
+  df = cbind(df, X)
+}
 
 
 
