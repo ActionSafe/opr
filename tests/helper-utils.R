@@ -12,3 +12,18 @@ get_table_from_list = function(res_list, true_value) {
   rownames(COEFF_SE_CP) = names(true_value)
   COEFF_SE_CP
 }
+
+get_figure_from_list = function(res_list, true_value) {
+  res_list = res_list[!sapply(res_list, function(x)any(is.na(x)))]
+  nsim = length(res_list)
+  nbe =  length(true_value)
+  be =  t(sapply(res_list, function(x) x$beta))
+  colnames(be) = names(true_value)
+  df = as.data.frame(be)
+  df_long <- tidyr::gather(df, key = "beta", value = "est")
+  ggplot(data = df_long, aes(x = beta, y = est, fill = beta)) + geom_boxplot() +
+    labs(y = "estimates")+
+    theme_bw() +
+    theme(legend.position = "none", axis.title = element_text(size = 16),
+          axis.text = element_text(size = 14))
+}

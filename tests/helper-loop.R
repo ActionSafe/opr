@@ -14,6 +14,7 @@ sim_loop = function(data_generator, model_generator, nsim = 100, ncores = 10){
   res = pblapply(1:nsim, function(Num) {
     tryCatch({
           sink("logs.txt")
+          browser()
           data = data_generator(Num)
           model = model_generator(data)
           return(model)

@@ -10,24 +10,20 @@ OrdinalSurv = function(id, time, ord, lower = NULL, upper = NULL) {
 
 # 这里最好还是用大写的变量名,不然可能会和命名空间stats里的变量发生冲突(比如df)
 doPanelFit.ML = function(DF, Method, StdErr) {
-  mean_cpois = Vectorize(function(lam) {
-    integrate(function(x, lam){pgamma(lam, x+1, lower = TRUE)}, 0, Inf, lam = lam)$value
-  })
-
+  # 求出dt,齐次过程需要用
+  dt = DF %>% group_by(id) %>% mutate(dt = diff(c(0, time))) %>% pull(dt)
+  # 判断是否提供了cut point信息
   if (!is.null(DF$lower) & !is.null(DF$upper)) {
     X = as.matrix(DF[, -c(1:5)])
     Y = DF$ord
-    # n_levels = length(unique(Y))
-    # theta = rep(1, n_levels - 1)
-    # lower_the = rep(0, n_levels - 1)
     theta = NULL
     true_lik = function(alpha, beta, theta) {
       XB = c(X %*% beta)
-      m0 = c(isMat %*% alpha)
-      dm0 = c(0.0, diff(m0))
-      dm0[ids] = m0[ids]
-      lam = dm0*exp(XB)
-      rawP = ppois(DF$upper, lam) - ppois(DF$lower, lam)
+      lam = alpha*dt*exp(XB)
+      # 第一个cut point=-1之后不需要额外处理
+      up = ppois(DF$upper, lam)
+      lo = ppois(DF$lower, lam)
+      rawP = up - lo
       rawP = ifelse(rawP <= 0, 1e-16, rawP)
       # corner case
       eqs = which(DF$upper == DF$lower)
@@ -38,69 +34,54 @@ doPanelFit.ML = function(DF, Method, StdErr) {
     X = as.matrix(DF[, -c(1:3)])
     Y = DF$ord
     n_levels = length(unique(Y))
-    theta = rep(1, n_levels - 1)
-    lower_the = rep(0, n_levels - 1)
-
+    theta = rep(1.5, n_levels - 1)
+    lower_the = rep(1, n_levels - 1)
     true_lik = function(alpha, beta, theta) {
-      theta = c(0, cumsum(theta), 1e2)
-      the = round(theta) #取整数
+      theta = c(-1, cumsum(theta), 1e4)
       XB = c(X %*% beta)
-      m0 = c(isMat %*% alpha)
-      dm0 = c(0.0, diff(m0))
-      dm0[ids] = m0[ids]
-      lam = dm0*exp(XB)
-      # 插值
-      # p1 = ppois(the[Y+1], lam)
-      # p2 = ppois(the[Y+1]+1, lam)
-      # up = p1 + (p2 - p1)*(theta[Y+1] - the[Y+1])
-      #
-      # p1 = ppois(the[Y], lam)
-      # p2 = ppois(the[Y]+1, lam)
-      # lo = p1 + (p2 - p1)*(theta[Y] - the[Y])
-      # rawP = up - lo
-      # gamma1
-      # rawP = pgamma(lam, shape = theta[Y] + 0.5) - pgamma(lam, shape = theta[Y + 1] + 0.5)
-      # gamma2
+      lam = alpha*dt*exp(XB)
       rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
       rawP = ifelse(rawP <= 0, 1e-10, rawP)
       -sum(log(rawP))
     }
-    # stop("ML method needs completely obseverd data!")
   }
-  max_time = max(DF$time)
-  # 设置样条函数
-  all_knots = seq(0, max_time, length.out = 5)
-  # 目前先固定3个内部节点(K^1/3+1?)
-  internal_knots = all_knots[c(2, 3, 4)]
-  isMat = splines2::iSpline(DF$time, knots = internal_knots, degree = 2, Boundary.knots = c(0.0, max_time), intercept = TRUE)
-  ids = which(!duplicated(DF$id))
   # 交替优化alpha和beta
   # 参数初始化
-  alpha = rep(1, ncol(isMat))
-  lower = rep(0, ncol(isMat))
+  max_time = max(DF$time)
+  alpha = 1
+  lower = 0
+  # 调用Poisson回归进行参数初始化
   x = cbind(Intercept = 1, X)
   fit = glm.fit(x, Y, family = poisson())
   beta = fit$coefficients[-1]
-  # beta = rep(0, ncol(X))
+
+  convergence = F
   for (i in 1:Method@max_iter) {
-    # browser()
+    # 更新cut point
     if (is.null(DF$lower) | is.null(DF$upper)) {
-      theta = optim(theta, function(x) true_lik(alpha, beta, x), NULL, method = "L-BFGS-B", lower = lower_the, hessian = FALSE)$par
+      theta = optim(theta, function(x) true_lik(alpha, beta, x), NULL,
+                    method = "L-BFGS-B", lower = lower_the, hessian = FALSE)$par
     }
-    beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE)$par
-    alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
-  }
-  if (is.null(DF$lower) | is.null(DF$upper)) {
-    theta = round(theta)
-    beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE)$par
-    alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
+    # 更新基线参数
+    alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL,
+                  method = "L-BFGS-B", lower = lower,hessian = FALSE)$par
+    # 更新协变量系数
+    betaPre = beta
+    beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL,
+                 method = "L-BFGS-B",hessian = FALSE)$par
+    s = beta - betaPre
+    if (max(abs(s)) < Method@absTol | max(abs(s / betaPre)) < Method@relTol) {
+      convergence = T
+      break
+    }
   }
   hess = numDeriv::hessian(function(x) true_lik(x[1:length(alpha)],
                                                 x[(length(alpha)+1):(length(alpha) + length(beta))],
                                                 theta), x = c(alpha, beta))
+
   ts = seq(0, max_time, 0.1)
-  isMat = splines2::iSpline(ts, knots = internal_knots, degree = 2, intercept = TRUE)
-  list(alpha = alpha, beta = beta, theta = theta, baseline = list(t = ts, Lambda = (isMat %*% alpha)[, 1]), hess = hess)
+  list(alpha = alpha, beta = beta, theta = theta, convergence = convergence,
+       baseline = list(t = ts, Lambda = ts*alpha), hess = hess)
 }
 
 doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
@@ -109,7 +90,8 @@ doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
   betaVar = solve(res$hess)[(length(res$alpha)+1):ncol(res$hess), (length(res$alpha)+1):ncol(res$hess)]
   betaVar[betaVar<=0] = 0
   betaSE = sqrt(diag(betaVar))
-  list(alpha = res$alpha, beta = res$beta, theta = c(0, cumsum(res$theta), Inf),baseline = res$baseline, betaVar = betaVar, betaSE = betaSE)
+  list(alpha = res$alpha, beta = res$beta, theta = c(0, cumsum(res$theta), Inf), convergence = res$convergence,
+       baseline = res$baseline, betaVar = betaVar, betaSE = betaSE)
 }
 
 doPanelFit.Random.Fisher = function(DF, Method, StdErr) {
@@ -251,8 +233,8 @@ doPanelFit.Method.Bootstrap = function(DF, Method, StdErr) {
 
 # Multiple dispatch
 setClass("Method",
-         representation(max_iter="numeric"),
-         prototype(max_iter=20),
+         representation(max_iter="numeric", absTol="numeric", relTol="numeric"),
+         prototype(max_iter=20, absTol=1e-4, relTol=1e-4),
          contains="VIRTUAL")
 setClass("ML", contains="Method")
 setClass("Random",contains="Method")
