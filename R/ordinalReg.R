@@ -113,6 +113,11 @@ doPanelFit.ML = function(DF, Method, StdErr) {
                                       x[(n_alpha + 1):(n_alpha + n_beta)],
                                       theta), x = c(alpha, beta))
 
+  if (!is.null(theta)) {
+    # 上边的theta是不包含0和Inf的
+    theta = c(0, cumsum(theta), Inf)
+  }
+
   list(alpha = alpha, beta = beta, theta = theta, convergence = convergence,
        baseline = isplineFun(coef = alpha, bspBasis), hess = hess)
 }
@@ -122,13 +127,7 @@ doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
   betaVar = solve(res$hess)[(length(res$alpha)+1):ncol(res$hess), (length(res$alpha)+1):ncol(res$hess)]
   # betaVar[betaVar<=0] = 0
   betaSE = sqrt(diag(betaVar))
-  if (!is.null(DF$lower) & !is.null(DF$upper)) {
-    theta = NULL
-  } else {
-    theta = c(0, cumsum(res$theta), Inf)
-  }
-  list(alpha = res$alpha, beta = res$beta, theta = theta, convergence = res$convergence,
-       baseline = res$baseline, betaVar = betaVar, betaSE = betaSE)
+  c(res, list(betaVar = betaVar, betaSE = betaSE))
 }
 
 doPanelFit.Random.Fisher = function(DF, Method, StdErr) {
@@ -254,18 +253,26 @@ doPanelFit.Method.Bootstrap = function(DF, Method, StdErr) {
   pb = txtProgressBar(min = 0,
                       max = StdErr@R,
                       style = 3,
-                      width = 100,
+                      width = 80,
                       char = "=")
-  for (i in 1:StdErr@R) {
+  R = StdErr@R
+  convergence <- rep(T, R)
+  for (i in 1:R) {
     id_sample = sample(ids, size = length(ids), replace = TRUE)
     DF2 = DF[DF$id %in% id_sample, ]
     res2 = doPanelFit(DF2, Method, NULL)
     betaMatrix[i, ] = res2$beta
+    convergence[i] <- res2$convergence
     setTxtProgressBar(pb, i)
   }
-  betaVar <- var(betaMatrix, na.rm = TRUE)
+  cat("\n")
+  converged = sum(convergence)
+  if (converged < R) {
+    warning(sprintf("Some bootstrap samples failed to converge (%d / %d converged)\n", converged, R))
+  }
+  betaVar <- var(betaMatrix[which(convergence), ], na.rm = TRUE)
   betaSE <- sqrt(diag(as.matrix(betaVar)))
-  c(res, list(betaVar = betaVar, betaSE = betaSE))
+  c(res, list(betaVar = betaVar, betaSE = betaSE, betaMat = betaMatrix, R = converged))
 }
 
 # Multiple dispatch

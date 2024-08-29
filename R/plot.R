@@ -18,7 +18,7 @@ print.ordinalReg = function(x, ...) {
   if (!is.null(x$theta)) {
     cat("\n")
     cat("Cut points for ordinal outcome: \n")
-    cat(x$theta)
+    cat(round(x$theta, 1))
     cat("\n")
   }
   invisible()
