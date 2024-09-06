@@ -127,21 +127,23 @@ gen_hpp_ni = function(n_case, lam, beta, X, max_time, levels = NULL) {
 }
 
 
-gen_nhpp_ni = function(n_case, Lam_func, beta, X, max_time, levels = NULL) {
+gen_nhpp_ni = function(n_case, Lam_func, beta, X, max_time, levels = NULL, frailty = NULL, rho = 1) {
   intensity = exp((X %*% beta)[, 1])
+  if(!is.null(frailty)) intensity = intensity*frailty
   # 生成Poisson过程（非齐次）
-  nObs = sample(1:9, n_case, replace=TRUE)
+  nObs = sample(1:6, n_case, replace=TRUE)
   df <- NULL
   for (i in 1:n_case) {
     # sq <- cumsum(round(runif(nObs[i], 0.25, 2), 2))
-    sq <- unique(round(sort(runif(nObs[i], 0.25, max_time)), 2))
+    sq <- unique(round(sort(runif(nObs[i], 0.1, max_time)), 1))
     nObs[i] <- length(sq)
-    Lam = Lam_func(sq)
+    Lam = Lam_func(sq)*intensity[i]
+    Lam = ((Lam+1)^rho - 1)/rho
     dLam = diff(c(0, Lam))
     df <- rbind(df,
                 data.frame(id=i,
                            time=sq,
-                           count=rpois(n=nObs[i], lambda=dLam * intensity[i])))
+                           count=rpois(n=nObs[i], lambda=dLam)))
   }
   ord = orderize(df$count, levels = levels)
   df$count_obs = ord$data

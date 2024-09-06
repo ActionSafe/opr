@@ -6,7 +6,7 @@ sim_loop = function(data_generator, model_generator, nsim = 100, ncores = 10){
   pboptions(char = "=", txt.width = 80)
   # 计算cluster
   cl = parallel::makeCluster(ncores)
-  clusterExport(cl, c("data_generator", "model_generator"))
+  clusterExport(cl, c("data_generator", "model_generator", "pars"))
   # clusterExport(cl, c("sim_data"), envir = environment())
   clusterEvalQ(cl, {
     library(opr)
@@ -17,7 +17,6 @@ sim_loop = function(data_generator, model_generator, nsim = 100, ncores = 10){
   res = pblapply(1:nsim, function(Num) {
     tryCatch({
           sink("logs.txt")
-          browser()
           data = data_generator(Num)
           model = model_generator(data)
           return(model)

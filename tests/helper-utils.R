@@ -8,13 +8,28 @@ get_table_from_list = function(res_list, true_value) {
   nbe =  length(true_value)
   true_matrix = matrix(true_value, nrow = nsim, ncol = nbe, byrow = T)
   bias =  t(sapply(res_list, function(x) x$beta)) - true_matrix
-  se = t(sapply(res_list, function(x) x$se))
+  se = t(sapply(res_list, function(x) {x$se}))
+  na.ind = sapply(res_list, function(x) any(is.na(x$se)))
+  se = se[which(!na.ind), ]
+  bias = bias[which(!na.ind), ]
   cp = apply((0 >= bias - qnorm(0.975,0,1)*se)*(0 <= bias + qnorm(0.975,0,1)*se), 2, sum) / nsim
   COEFF_SE_CP = cbind(apply(bias, 2, mean), apply(bias, 2, sd), apply(se, 2, mean), cp)
   colnames(COEFF_SE_CP) = c("Bias", "SD", "SE", "CP")
   rownames(COEFF_SE_CP) = names(true_value)
   COEFF_SE_CP
 }
+
+# 实用工具：把列表结果转换成表格
+get_score_from_list = function(res_list) {
+  res_list = res_list[!sapply(res_list, function(x)any(is.na(x)))]
+  nsim = length(res_list)
+  bias =  t(sapply(res_list, function(x) x$beta))
+  COEFF_SE_CP = cbind(apply(bias, 2, mean))
+  colnames(COEFF_SE_CP) = c("Score1")
+  # rownames(COEFF_SE_CP) = names(true_value)
+  COEFF_SE_CP
+}
+
 
 get_figure_from_list = function(res_list, true_value) {
   res_list = res_list[!sapply(res_list, function(x)any(is.na(x)))]
@@ -29,6 +44,24 @@ get_figure_from_list = function(res_list, true_value) {
     theme_bw() +
     theme(legend.position = "none", axis.title = element_text(size = 16),
           axis.text = element_text(size = 14))
+}
+
+get_baseline_plot_from_list = function(res_list, true_Lam, max_time,
+                                       xlab="Follow-up time", ylab="Cumulative baseline intensity function",
+                                       main=NULL, type="l", ...) {
+  res_list = res_list[!sapply(res_list, function(x)any(is.na(x)))]
+  nsim = length(res_list)
+  # max_time = min(sapply(res_list, function(x) attr(x$baseline, "Boundary.knots")[2]))
+  sq =  seq(0, max_time, 0.1)
+  baselineMatrix =  t(sapply(res_list, function(x) x$baseline(sq)))
+  # 求出置信区间
+  baselineQT = apply(baselineMatrix, 2, quantile,
+                      probs=c(0.025, 0.975), na.rm=TRUE, names=FALSE)
+  baselineMean = apply(baselineMatrix, 2, mean, na.rm=TRUE, names=FALSE)
+  plot(sq, true_Lam(sq), xlab=xlab, ylab=ylab, main=main, type=type, ...)
+  lines(sq, baselineMean, col = "red", lty = 2, ...)
+  lines(sq, baselineQT[1, ], col = "green", lty = 3, ...)
+  lines(sq, baselineQT[2, ], col = "green", lty = 3, ...)
 }
 
 ##############################################################################
@@ -76,4 +109,23 @@ plot.isplineFun <- function(x, xlab="x", ylab="f(x)", main=NULL, type="l", ...) 
   yVal <- x(xVal)
   plot(xVal, yVal, xlab=xlab, ylab=ylab, main=main, type=type, ...)
   ## abline(v=attr(x, "knots"), lty="dotted", col="red")
+}
+
+# 预测用的函数
+predict.panelReg = function(x, newdata) {
+  # 提取X
+  form = as.formula(x$call$formula)
+  form[[2]] = NULL
+  X = model.matrix(form, newdata)[, -1]
+  # 计算dLam
+  dLam = unlist(tapply(x$baseline(newdata$time), newdata$id, function(x) diff(c(0, x))))
+  dLam = dLam * exp(c(X %*% x$beta))
+  newdata$predicted = dLam
+  newdata
+}
+
+predict.ordinalReg = function(x, levels, newdata) {
+  pred = predict.panelReg(x, newdata)
+  pred$predicted = orderize(pred$predicted, levels = levels)$data
+  pred
 }

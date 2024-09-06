@@ -26,6 +26,7 @@ doPanelFit.ML = function(DF, Method, StdErr) {
     n_levels = length(unique(Y))
     theta = rep(1.5, n_levels - 1)
     l_theta = rep(1, n_levels - 1)
+    l_theta[1] = 0  # 第一项是可以为0的
     n_theta = length(theta)
   }
   # 这里参数theta只是为了统一求Hessian而已
@@ -44,8 +45,8 @@ doPanelFit.ML = function(DF, Method, StdErr) {
     rawP = up - lo
     rawP = ifelse(rawP <= 0, 1e-16, rawP)
     # corner case
-    eqs = which(DF$upper == DF$lower)
-    rawP[eqs] = dpois(DF$upper, lam)[eqs] + 1e-16
+    # eqs = which(DF$upper == DF$lower)
+    # rawP[eqs] = dpois(DF$upper, lam)[eqs] + 1e-16
     -sum(log(rawP))
   }
 
@@ -55,7 +56,7 @@ doPanelFit.ML = function(DF, Method, StdErr) {
     XB = c(X %*% beta)
     lam = dLam*exp(XB)
     rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
-    rawP = ifelse(rawP <= 0, 1e-10, rawP)
+    # rawP = ifelse(rawP <= 0, 1e-10, rawP)
     -sum(log(rawP))
   }
 
@@ -89,6 +90,12 @@ doPanelFit.ML = function(DF, Method, StdErr) {
     alpha <- optimized_params[1:n_alpha]
     beta <- optimized_params[(n_alpha + 1):(n_alpha + n_beta)]
     theta <- optimized_params[(n_alpha + n_beta + 1):(n_alpha + n_beta + n_theta)]
+    # 计算hessian矩阵用的似然函数
+    hess = hessian(function(x) pseudo_lik(x[1:n_alpha],
+                                        x[(n_alpha + 1):(n_alpha + n_beta)],
+                                        x[(n_alpha + n_beta + 1):(n_alpha + n_beta + n_theta)]),
+                   x = c(alpha, beta, theta))
+
   } else {
     # 提供了cut point,需要优化似然函数
     res = optim(c(alpha, beta),
@@ -104,14 +111,14 @@ doPanelFit.ML = function(DF, Method, StdErr) {
     optimized_params <- res$par
     alpha <- optimized_params[1:n_alpha]
     beta <- optimized_params[(n_alpha + 1):(n_alpha + n_beta)]
+    # 计算hessian矩阵用的似然函数
+    hess = hessian(function(x) true_lik(x[1:n_alpha],
+                                        x[(n_alpha + 1):(n_alpha + n_beta)],
+                                        theta), x = c(alpha, beta))
   }
 
   convergence = (res$convergence == 0)
 
-  # 计算hessian矩阵用的似然函数
-  hess = hessian(function(x) true_lik(x[1:n_alpha],
-                                      x[(n_alpha + 1):(n_alpha + n_beta)],
-                                      theta), x = c(alpha, beta))
 
   if (!is.null(theta)) {
     # 上边的theta是不包含0和Inf的
@@ -119,129 +126,134 @@ doPanelFit.ML = function(DF, Method, StdErr) {
   }
 
   list(alpha = alpha, beta = beta, theta = theta, convergence = convergence,
-       baseline = isplineFun(coef = alpha, bspBasis), hess = hess)
+       baseline = isplineFun(coef = alpha, bspBasis),bspBasis = bspBasis, dRawIspMat = dRawIspMat,
+       hess = hess)
 }
 
 doPanelFit.ML.Fisher = function(DF, Method, StdErr) {
   res = doPanelFit(DF, Method, NULL)
-  betaVar = solve(res$hess)[(length(res$alpha)+1):ncol(res$hess), (length(res$alpha)+1):ncol(res$hess)]
+  n_alpha = length(res$alpha)
+  n_beta = length(res$beta)
+  D = solve(res$hess)  # 传统方差估计
+  alphaVar = D[1:n_alpha, 1:n_alpha]
+  betaVar = D[(n_alpha + 1):(n_alpha + n_beta), (n_alpha + 1):(n_alpha + n_beta)]
   # betaVar[betaVar<=0] = 0
-  betaSE = sqrt(diag(betaVar))
-  c(res, list(betaVar = betaVar, betaSE = betaSE))
+  alphaSE = sqrt(diag(alphaVar))
+  betaSE = sqrt(diag(betaVar))  # 对角线小于0会产生NAs,可能没有收敛
+  # 去掉用不上的变量
+  res$dRawIspMat = NULL
+  c(res, list(alphaVar = alphaVar, alphaSE = alphaSE, betaVar = betaVar, betaSE = betaSE))
 }
 
-doPanelFit.Random.Fisher = function(DF, Method, StdErr) {
+doPanelFit.ML.Sandwich = function(DF, Method, StdErr) {
+  res = doPanelFit(DF, Method, NULL)
+  # 初始化
+  alpha = res$alpha;n_alpha = length(alpha)
+  beta = res$beta;n_beta = length(beta)
+  theta = res$theta;n_theta = length(theta)
+  dRawIspMat = res$dRawIspMat
+  D = solve(res$hess)  # 传统方差估计
+
+  # 判断是否提供了cut point信息
+  if (!is.null(DF$lower) & !is.null(DF$upper)) {
+    X = as.matrix(DF[, -c(1:5)])
+    Y = DF$ord
+  }else {
+    X = as.matrix(DF[, -c(1:3)])
+    Y = DF$ord
+  }
+  # 可以求出单个个体的likelihood
+  # 向量函数
+  true_lik = function(alpha, beta, theta = NULL) {
+    dLam = c(dRawIspMat %*% alpha)
+    XB = c(X %*% beta)
+    lam = dLam*exp(XB)
+    up = ppois(DF$upper, lam)
+    lo = ppois(DF$lower, lam)
+    rawP = up - lo
+    rawP = ifelse(rawP <= 0, 1e-16, rawP)
+    -sum(log(rawP))
+    tapply(log(rawP), DF$id, sum)
+  }
+
+  pseudo_lik = function(alpha, beta, theta) {
+    theta = c(-1, cumsum(theta), 1e4)
+    dLam = c(dRawIspMat %*% alpha)
+    XB = c(X %*% beta)
+    lam = dLam*exp(XB)
+    rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
+    tapply(log(rawP), DF$id, sum)
+  }
+
+
+  # 判断是否提供了cut point信息
+  if (!is.null(DF$lower) & !is.null(DF$upper)) {
+    U = jacobian(function(x) true_lik(x[1:n_alpha],
+                                 x[(n_alpha + 1):(n_alpha + n_beta)],
+                                 theta), x = c(alpha, beta))
+  }else {
+    U = jacobian(function(x) pseudo_lik(x[1:n_alpha],
+                                          x[(n_alpha + 1):(n_alpha + n_beta)],
+                                          x[(n_alpha + n_beta + 1):(n_alpha + n_beta + n_theta)]),
+                   x = c(alpha, beta, theta))
+  }
+
+  # Sandwich estimator
+  V = D %*% (t(U) %*% U) %*% D
+
+  alphaVar = V[1:n_alpha, 1:n_alpha]
+  betaVar = V[(n_alpha + 1):(n_alpha + n_beta), (n_alpha + 1):(n_alpha + n_beta)]
+  # betaVar[betaVar<=0] = 0
+  alphaSE = sqrt(diag(alphaVar))
+  betaSE = sqrt(diag(betaVar))  # 对角线小于0会产生NAs,可能没有收敛
+
+  # 去掉用不上的变量
+  res$dRawIspMat = NULL
+
+  c(res, list(alphaVar = alphaVar, alphaSE = alphaSE, betaVar = betaVar, betaSE = betaSE))
+}
+
+
+doPanelFit.ML.Profile = function(DF, Method, StdErr) {
+  res = doPanelFit(DF, Method, NULL)
+  dRawIspMat = res$dRawIspMat
   X = as.matrix(DF[, -c(1:3)])
   Y = DF$ord
   n_levels = length(unique(Y))
-  max_time = max(DF$time)
-  # 设置样条函数
-  all_knots = seq(0, max_time, length.out = 5)
-  # 目前先固定3个内部节点(K^1/3+1?)
-  internal_knots = all_knots[c(2, 3, 4)]
-  isMat = iSpline(DF$time, knots = internal_knots, degree = 2, Boundary.knots = c(0.0, max_time), intercept = TRUE)
-  ids = which(!duplicated(DF$id))
-  true_lik = function(alpha, beta, theta) {
-    # browser()
+  # 初始化
+  alpha = res$alpha;n_alpha = length(alpha); l_alpha = rep(0, n_alpha)
+  # beta = res$beta;n_beta = length(beta);l_beta = rep(-10, n_beta)
+  theta = res$theta;n_theta = length(theta);l_theta = rep(1, n_theta)
+
+  pseudo_lik = function(alpha, beta, theta) {
+    theta = c(-1, cumsum(theta), 1e4)
+    dLam = c(dRawIspMat %*% alpha)
     XB = c(X %*% beta)
-    m0 = c(isMat %*% alpha)
-    dm0 = c(0.0, diff(m0))
-    dm0[ids] = m0[ids]
-    lam = dm0*exp(XB)
-
-    theta = c(0, cumsum(theta), Inf)
-
-    up = ppois(theta[Y + 1], lam)
-    lo = ppois(theta[Y], lam)
-    rawP = up - lo
-    eqs = which(theta[Y + 1]==theta[Y])
-    rawP[eqs] = dpois(theta[Y], lam)[eqs]
-    # if(any(rawP < 0)) stop("up < lo, fatal error")
-    rawP = ifelse(rawP <= 0, 1e-6, rawP)
-    -sum(log(rawP))
+    lam = dLam*exp(XB)
+    rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
+    # rawP = ifelse(rawP <= 0, 1e-10, rawP)
+    sum(log(rawP))
   }
-  # 参数初始化
-  alpha = rep(1, ncol(isMat))
-  xx = cbind(Intercept = 1, X)
-  fit = glm.fit(xx, Y, family = poisson())
-  # alpha = sample(1:10, n_levels - 1, replace = TRUE)
-  beta = fit$coefficients[-1]
-  # lower = c(rep(0, ncol(isMat)), rep(-Inf, ncol(X)))
-  lower = rep(0, ncol(isMat))
-  # random search
-  opt_sol = list(value = Inf)
-  for (i in 1:Method@max_iter) {
-    theta = sample(1:10, n_levels - 1, replace = TRUE)
-    # browser()
-    for (i in 1:10) {
-      # browser()
-      beta = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE, control = list(maxit=20))$par
-      alpha = optim(alpha, function(x) true_lik(x, beta, theta), NULL, method = "L-BFGS-B", lower = lower,hessian = FALSE, control = list(maxit=20))$par
-    }
-    res = optim(beta, function(x) true_lik(alpha, x, theta), NULL, method = "L-BFGS-B",hessian = FALSE)
-    # res = optim(c(alpha, beta), function(x) true_lik(x[1:length(alpha)], x[(length(alpha)+1):(length(alpha)+length(beta))], theta), NULL, method = "L-BFGS-B",hessian = FALSE)
-    if(res$value < opt_sol$value) {
-      opt_sol$value = res$value
-      opt_sol$theta = theta
-      opt_sol$par = c(alpha, beta)
-    }
+
+  profile_lik = function(beta) {
+    res = optim(c(alpha, beta, theta),
+                function(x) {
+                  alpha <- x[1:n_alpha]
+                  beta <- x[(n_alpha + 1):(n_alpha + n_beta)]
+                  theta <- x[(n_alpha + n_beta + 1):(n_alpha + n_beta + n_theta)]
+                  pseudo_lik(alpha, beta, theta)
+                }, NULL,
+                method = "L-BFGS-B", lower = c(l_alpha, l_beta, l_theta),
+                hessian = FALSE, control = list(fnscale = -1,
+                                                maxit = Method@max_iter,
+                                                factr = 1e9))
+    res$value
   }
-  alpha = opt_sol$par[1:length(alpha)]
-  beta = opt_sol$par[(length(alpha)+1):(length(alpha)+length(beta))]
-  theta = opt_sol$theta
-  # browser()
-  hess = numDeriv::hessian(function(x) true_lik(alpha, x, theta), x = beta)
-  betaVar = solve(hess)
-  betaVar[betaVar<=0] = 0
+
+  D = solve(res$hess)[(length(res$alpha)+1):ncol(res$hess), (length(res$alpha)+1):ncol(res$hess)]
+  # betaVar[betaVar<=0] = 0
   betaSE = sqrt(diag(betaVar))
-  list(alpha = alpha, beta = beta, theta = theta, betaVar = betaVar, betaSE = betaSE)
-}
-
-doPanelFit.EM = function(DF, Method, StdErr) {
-  X = as.matrix(DF[, -c(1:3)])  # 协变量
-  DF = cbind(DF[, c(1:3)], lower = 0, upper = Inf, DF[, -c(1:3)])
-  max_time = max(DF$time)  # 最大观察时间
-  ranks = dplyr::dense_rank(DF$ord)
-  n_levels = length(unique(DF$ord))  # 有多少个等级
-  # 设置样条函数
-  all_knots = seq(0, max_time, length.out = 5)
-  # 目前先固定3个内部节点(K^1/3+1?)
-  internal_knots = all_knots[c(2, 3, 4)]
-  isMat = splines2::iSpline(DF$time, knots = internal_knots, degree = 2, Boundary.knots = c(0.0, max_time), intercept = TRUE)
-  # 参数初始化
-  # alpha = rep(1, ncol(isMat))
-  alpha = runif(ncol(isMat))
-  # browser()
-  beta = spef::panelReg(spef::PanelSurv(id, time, ord) ~ X, data = DF,method = "MPL", se = "NULL")$beta
-  met = new("ML", max_iter = Method@max_iter)
-  ids = which(!duplicated(DF$id))
-  for (i in 1:Method@em_iter) {
-    # debug
-    print(alpha)
-    print(beta)
-    # E step
-    XB = c(X %*% beta)
-    m0 = c(isMat %*% alpha)
-    dm0 = c(0.0, diff(m0))
-    dm0[ids] = m0[ids]
-    lam = dm0*exp(XB)
-    qq = quantile(lam, probs = seq(0, 1, 1/n_levels))
-    qq = as.integer(qq)
-    # print(qq)
-    qq[1] = 0
-    qq[length(qq)] = Inf
-    DF$lower = sapply(ranks, function(x) qq[x])
-    DF$upper = sapply(ranks, function(x) qq[x+1])
-    # browser()
-    # M step
-    res = doPanelFit(DF, Method = met, NULL)
-    # 更新参数
-    alpha = res$alpha + rnorm(length(alpha))/i
-    beta = res$beta + rnorm(length(beta))/i
-  }
-  ts = seq(0, max_time, 0.1)
-  isMat = splines2::iSpline(ts, knots = internal_knots, degree = 2, intercept = TRUE)
-  list(alpha = alpha, beta = beta, baseline = list(t = ts, Lambda = (isMat %*% alpha)[, 1]), hess = res$hess)
+  c(res, list(betaVar = betaVar, betaSE = betaSE))
 }
 
 # 所有算法的Bootstrap方差计算都会被派发到这个函数
@@ -281,19 +293,13 @@ setClass("Method",
          prototype(max_iter=20, absTol=1e-4, relTol=1e-4),
          contains="VIRTUAL")
 setClass("ML", contains="Method")
-setClass("Random",contains="Method")
-setClass("EM",
-         representation(em_iter = "numeric", max_iter="numeric"),
-         prototype(em_iter=50, max_iter=20), contains="Method")
-
-setClass("EM",contains="Method")
 
 setClass("StdErr")
 setClass("Bootstrap",
          representation(R="numeric"),
          prototype(R=30),
          contains="StdErr")
-
+setClass("Sandwich", contains="StdErr")
 setClass("Fisher", contains="StdErr")
 
 setGeneric("doPanelFit",
@@ -310,16 +316,14 @@ setMethod("doPanelFit",
           doPanelFit.ML.Fisher)
 
 setMethod("doPanelFit",
-          signature(Method = "Random", StdErr = "Fisher"),
-          doPanelFit.Random.Fisher)
+          signature(Method = "ML", StdErr = "Sandwich"),
+          doPanelFit.ML.Fisher)
+
 
 setMethod("doPanelFit",
           signature(Method = "Method", StdErr = "Bootstrap"),
           doPanelFit.Method.Bootstrap)
 
-setMethod("doPanelFit",
-          signature(Method = "EM", StdErr = "NULL"),
-          doPanelFit.EM)
 
 #' Fits Semiparametric Regression Models for Ordinal Panel Count Data
 #' @param formula A formula object, with the response on the left of a
@@ -339,7 +343,7 @@ setMethod("doPanelFit",
 #' @importFrom splines bs
 ordinalReg = function(formula, data,
                       method = c("ML", "Random", "EM"),
-                      se = c("NULL", "Bootstrap", "Fisher"),
+                      se = c("NULL", "Bootstrap", "Fisher", "Sandwich"),
                       control = list()) {
   # check function arguments
   method = match.arg(method)
