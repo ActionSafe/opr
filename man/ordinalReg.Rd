@@ -7,8 +7,8 @@
 ordinalReg(
   formula,
   data,
-  method = c("ML", "Random", "EM"),
-  se = c("NULL", "Bootstrap", "Fisher"),
+  method = c("ML", "ES", "EM"),
+  se = c("NULL", "Bootstrap", "Fisher", "Sandwich"),
   control = list()
 )
 }
