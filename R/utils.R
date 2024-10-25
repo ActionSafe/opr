@@ -3,20 +3,21 @@
 #   list(df, knots, intercept=TRUE, Boundary.knots)
 ##############################################################################
 ispline <- function(x, bspBasis) {
-  n <- length(x)
-  # B-Spline matrix, n * (bspBasis$df + 1)
-  bspMat <- do.call("bs", c(list(x=x), bspBasis))
-  breaks <- c(bspBasis$Boundary.knots[1], bspBasis$knots,
-              bspBasis$Boundary.knots[2])
-  idx <- as.numeric(cut(x, breaks, include.lowest=TRUE, right=FALSE)) + 3
-  sqMat <- t(apply(matrix(idx), 1, function(u) seq(u, u - 3)))
-  # I-Spline matrix
-  ispMat <- matrix(0, n, bspBasis$df + 1)
-  for (i in 1:n) {
-    ispMat[i, seq(1, idx[i] - 4)] <- 1
-    ispMat[i, sqMat[i, ]] <- cumsum(bspMat[i, sqMat[i, ]])
-  }
-  ispMat[, -1]
+  # n <- length(x)
+  # # B-Spline matrix, n * (bspBasis$df + 1)
+  # bspMat <- do.call("bs", c(list(x=x), bspBasis))
+  # breaks <- c(bspBasis$Boundary.knots[1], bspBasis$knots,
+  #             bspBasis$Boundary.knots[2])
+  # idx <- as.numeric(cut(x, breaks, include.lowest=TRUE, right=FALSE)) + 3
+  # sqMat <- t(apply(matrix(idx), 1, function(u) seq(u, u - 3)))
+  # # I-Spline matrix
+  # ispMat <- matrix(0, n, bspBasis$df + 1)
+  # for (i in 1:n) {
+  #   ispMat[i, seq(1, idx[i] - 4)] <- 1
+  #   ispMat[i, sqMat[i, ]] <- cumsum(bspMat[i, sqMat[i, ]])
+  # }
+  # ispMat[, -1]
+  do.call("iSpline", c(list(x=x), bspBasis))
 }
 
 ##############################################################################
@@ -45,3 +46,5 @@ plot.isplineFun <- function(x, xlab="x", ylab="f(x)", main=NULL, type="l", ...) 
   plot(xVal, yVal, xlab=xlab, ylab=ylab, main=main, type=type, ...)
   ## abline(v=attr(x, "knots"), lty="dotted", col="red")
 }
+
+

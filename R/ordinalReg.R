@@ -54,12 +54,19 @@ doPanelFit.ML = function(DF, Method, StdErr) {
     -sum(log(rawP))
   }
 
+  ppois_lin = function(q, lam){
+    p1 = ppois(q, lam)
+    p2 = ppois(q + 1, lam)
+    p1 + (p2 - p1)*(q - floor(q))
+  }
+
   pseudo_lik = function(alpha, beta, theta) {
     theta = c(-1, cumsum(theta), 1e4)
     dLam = c(dRawIspMat %*% alpha)
     XB = c(X %*% beta)
     lam = dLam*exp(XB)
     rawP = pgamma(lam, theta[Y+1] + 1, lower = FALSE) - pgamma(lam, theta[Y] + 1, lower = FALSE)
+    # rawP = ppois_lin(theta[Y+1], lam) - ppois_lin(theta[Y], lam)
     rawP = ifelse(rawP <= 0, 1e-10, rawP)
     lik = -sum(log(rawP))
     if(is.na(lik)) stop("NA produced")

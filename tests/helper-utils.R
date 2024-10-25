@@ -1,4 +1,4 @@
-library(splines)
+library(splines2)
 
 
 # 实用工具：把列表结果转换成表格
@@ -20,14 +20,15 @@ get_table_from_list = function(res_list, true_value) {
 }
 
 # 实用工具：把列表结果转换成表格
-get_score_from_list = function(res_list) {
+get_score_from_list = function(res_list, name = NULL) {
   res_list = res_list[!sapply(res_list, function(x)any(is.na(x)))]
   nsim = length(res_list)
-  bias =  t(sapply(res_list, function(x) x$beta))
-  COEFF_SE_CP = cbind(apply(bias, 2, mean))
-  colnames(COEFF_SE_CP) = c("Score1")
-  # rownames(COEFF_SE_CP) = names(true_value)
-  COEFF_SE_CP
+  # bias =  t(sapply(res_list, function(x) x$score))
+  # COEFF_SE_CP = cbind(apply(bias, 2, mean), apply(bias, 2, sd))
+  # colnames(COEFF_SE_CP) = c("Score", "SD")
+  # rownames(COEFF_SE_CP) = name
+  # COEFF_SE_CP
+  Reduce('+', res_list)/nsim
 }
 
 
@@ -69,20 +70,21 @@ get_baseline_plot_from_list = function(res_list, true_Lam, max_time,
 #   list(df, knots, intercept=TRUE, Boundary.knots)
 ##############################################################################
 ispline <- function(x, bspBasis) {
-  n <- length(x)
-  # B-Spline matrix, n * (bspBasis$df + 1)
-  bspMat <- do.call("bs", c(list(x=x), bspBasis))
-  breaks <- c(bspBasis$Boundary.knots[1], bspBasis$knots,
-              bspBasis$Boundary.knots[2])
-  idx <- as.numeric(cut(x, breaks, include.lowest=TRUE, right=FALSE)) + 3
-  sqMat <- t(apply(matrix(idx), 1, function(u) seq(u, u - 3)))
-  # I-Spline matrix
-  ispMat <- matrix(0, n, bspBasis$df + 1)
-  for (i in 1:n) {
-    ispMat[i, seq(1, idx[i] - 4)] <- 1
-    ispMat[i, sqMat[i, ]] <- cumsum(bspMat[i, sqMat[i, ]])
-  }
-  ispMat[, -1]
+  # n <- length(x)
+  # # B-Spline matrix, n * (bspBasis$df + 1)
+  # bspMat <- do.call("bs", c(list(x=x), bspBasis))
+  # breaks <- c(bspBasis$Boundary.knots[1], bspBasis$knots,
+  #             bspBasis$Boundary.knots[2])
+  # idx <- as.numeric(cut(x, breaks, include.lowest=TRUE, right=FALSE)) + 3
+  # sqMat <- t(apply(matrix(idx), 1, function(u) seq(u, u - 3)))
+  # # I-Spline matrix
+  # ispMat <- matrix(0, n, bspBasis$df + 1)
+  # for (i in 1:n) {
+  #   ispMat[i, seq(1, idx[i] - 4)] <- 1
+  #   ispMat[i, sqMat[i, ]] <- cumsum(bspMat[i, sqMat[i, ]])
+  # }
+  # ispMat[, -1]
+  do.call("iSpline", c(list(x=x), bspBasis))
 }
 
 ##############################################################################
@@ -128,4 +130,21 @@ predict.ordinalReg = function(x, levels, newdata) {
   pred = predict.panelReg(x, newdata)
   pred$predicted = orderize(pred$predicted, levels = levels)$data
   pred
+}
+
+
+predict.clmm2 = function(object, newdata) {
+  # 提取X
+  form = as.formula(object$call$location)
+  form[[2]] = NULL
+  X = model.matrix(form, newdata)[, -1]
+  # 提取系数,等级
+  nlev = length(object$Theta)+1
+  res = matrix(0, nrow = nrow(newdata), ncol = nlev)
+  be = object$beta
+  the = c(-Inf, object$Theta, Inf)
+  for (lev in 1:nlev) {
+    res[, lev] = plogis(the[lev + 1] - X %*% be) - plogis(the[lev] - X %*% be)
+  }
+  res
 }

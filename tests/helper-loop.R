@@ -10,6 +10,7 @@ sim_loop = function(data_generator, model_generator, nsim = 100, ncores = 10){
   # clusterExport(cl, c("sim_data"), envir = environment())
   clusterEvalQ(cl, {
     library(opr)
+    library(ordinal)
     source("./tests/helper-utils.R")
     source("./tests/helper-data.R")
   })

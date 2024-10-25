@@ -1,10 +1,10 @@
 Package: opr
 Type: Package
-Title: Fitting ordinal panel regression models
+Title: Fitting ordinally observed panel count regression models
 Version: 0.8.0
 Author: Zhou JJ
 Maintainer: Zhou JJ <actionsafe@163.com>
-Description: Fitting ordinal panel regression models
+Description: Fitting ordinally observed panel count regression models
 License: GPL3
 Encoding: UTF-8
 LazyData: true

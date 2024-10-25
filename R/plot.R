@@ -1,3 +1,7 @@
+
+##############################################################################
+## Print ordinalReg object
+##############################################################################
 #' @export
 print.ordinalReg = function(x, ...) {
   digits = 4
@@ -24,18 +28,29 @@ print.ordinalReg = function(x, ...) {
   invisible()
 }
 
+##############################################################################
+## Plot baseline mean function
+##############################################################################
 #' @export
 plot.ordinalReg = function(x, ...) {
   Lam_func = x$baseline
-  bd <- attr(Lam_func, "Boundary.knots")
-  xVal <- seq(bd[1], bd[2], length=101)
-  yVal <- Lam_func(xVal)
-  plot(xVal, yVal, xlab = "", ylab = "", type = "l",...)
-  title(xlab = "Time", ylab = expression(hat(Lambda[0])(t)), line = 2, cex.lab = 1)
+  if(class(Lam_func)[1] == "isplineFun") {
+    bd <- attr(Lam_func, "Boundary.knots")
+    xVal <- seq(bd[1], bd[2], length=101)
+    yVal <- Lam_func(xVal)
+    plot(xVal, yVal, xlab = "", ylab = "", type = "l",...)
+    title(xlab = "Time", ylab = expression(hat(Lambda[0])(t)), line = 2, cex.lab = 1)
+  } else if(class(Lam_func)[1] == "stepfun"){
+    plot(Lam_func, do.points=FALSE, xlab="", ylab = "",main = NULL, ...)
+    title(xlab = "Time", ylab = expression(hat(Lambda[0])(t)), line = 2, cex.lab = 1)
+  } else {
+    plot(Lam_func, xlab="", ylab = "", main = NULL, ...)
+    title(xlab = "Time", ylab = expression(hat(Lambda[0])(t)), line = 2, cex.lab = 1)
+  }
 }
 
 ##############################################################################
-## Print coef(panelReg)
+## Print coef(ordinalReg)
 ##############################################################################
 #' @export
 coef.ordinalReg <- function(object, ...) {
@@ -45,7 +60,7 @@ coef.ordinalReg <- function(object, ...) {
 }
 
 ##############################################################################
-## Print vcov(panelReg)
+## Print vcov(ordinalReg)
 ##############################################################################
 #' @export
 vcov.ordinalReg <- function(object, ...) {
@@ -58,3 +73,29 @@ vcov.ordinalReg <- function(object, ...) {
     return(object$betaVar)
   }
 }
+
+
+
+##############################################################################
+# BIC
+##############################################################################
+#' @export
+BIC.ordinalReg <- function(x) {
+  with(x, {
+    length(c(alpha, beta, theta))*log(n)-2*loglik
+  })
+}
+
+##############################################################################
+# AIC
+##############################################################################
+#' @export
+AIC.ordinalReg <- function(x) {
+  with(x, {
+    (length(c(alpha, beta, theta))-loglik)*2
+  })
+}
+
+
+
+
