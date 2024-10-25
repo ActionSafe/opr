@@ -4,3 +4,4 @@
 .Ruserdata
 logs.txt
 plumber.R
+./tests/*
